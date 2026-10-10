@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X → 飞书云文档外观
 // @namespace    local.x-feishu-docs
-// @version      1.4.3
+// @version      1.4.4
 // @description  将 X 时间线、用户主页和帖子讨论显示为飞书云文档风格，保留原文、媒体与原生操作。
 // @author       KAMIENDER
 // @homepageURL  https://github.com/KAMIENDER/x-feishu-docs
@@ -160,7 +160,7 @@
   function boot() {
     try {
       host = document.createElement('div');
-      host.id = HOST_ID; host.dataset.version = '1.4.3';
+      host.id = HOST_ID; host.dataset.version = '1.4.4';
       host.hidden = !activeMode();
       shadow = host.attachShadow({ mode: 'open' });
       shadow.innerHTML = `<style>${css}</style><div class="app">
@@ -286,7 +286,7 @@
     if (activeMode() && event.code === 'Escape' && shadow) {
       event.preventDefault();
       if (!$('#popover').hidden) $('#popover').hidden = true;
-      else if (state.reader) closeReader();
+      else if (state.reader) returnFromReader();
     }
     // 原页面可能注册全局快捷键；输入笔记时不能让按键透传给 X。
     if (activeMode() && shadow && event.composedPath().includes(host)) event.stopImmediatePropagation();
@@ -419,7 +419,7 @@
   function queueNativeAction(record, action, mediaIndex) {
     // 虚拟列表已回收帖子时，先让 X 加载该帖子，限定 ID 与有效期，避免误操作其他帖。
     save('pendingAction', {id:record.id, action, mediaIndex, expires:Date.now() + 20000});
-    location.assign(record.url);
+    navigateToPost(record);
   }
   function resumePendingAction() {
     if (!activeMode() || state.nativeUI) return;
@@ -670,8 +670,50 @@
   }
   function readRecord(record) {
     // 时间线没有完整讨论区；打开真实详情路由让 X 加载评论，继续使用页面已有 DOM。
-    if (record.kind === 'post' && postInfo(location.href)?.id !== record.id) { location.assign(record.url); return; }
+    if (record.kind === 'post' && postInfo(location.href)?.id !== record.id) { navigateToPost(record); return; }
     openReader(record);
+  }
+  function postReturnRoutes() {
+    // sessionStorage 随当前标签页保存来源；不能用油猴共享存储，否则其他标签页会覆盖返回目标。
+    try {
+      const routes = JSON.parse(sessionStorage.getItem(STORE + 'returnRoutes') || '[]');
+      if (!Array.isArray(routes)) return [];
+      return routes.filter(route => route && validReturnPath(route.from) && validReturnPath(route.to)).slice(-16);
+    } catch { return []; }
+  }
+  function validReturnPath(path) {
+    if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) return false;
+    try {
+      const url = new URL(path, location.origin);
+      return url.origin === location.origin && !/^\/(?:compose|login|i\/flow|i\/jf)(?:\/|$)/.test(url.pathname);
+    } catch { return false; }
+  }
+  function savePostReturnRoutes(routes) {
+    try { sessionStorage.setItem(STORE + 'returnRoutes', JSON.stringify(routes)); }
+    catch { /* 标签页存储不可用时，返回真实 X 首页，不能在详情路由上伪造首页。 */ }
+  }
+  function navigateToPost(record) {
+    const from = state.overlayReturn || location.pathname + location.search;
+    const destination = new URL(record.url, location.origin);
+    const to = destination.pathname + destination.search;
+    const samePost = postInfo(new URL(from, location.origin).href)?.id === record.id;
+    if (!samePost && destination.origin === location.origin && from !== to && validReturnPath(from) && validReturnPath(to)) {
+      let routes = postReturnRoutes();
+      // 新的列表入口重新开始；从评论进入子讨论时保留返回原帖的路径。
+      if (routes[routes.length - 1]?.to !== from) routes = [];
+      routes.push({from, to}); savePostReturnRoutes(routes.slice(-16));
+    }
+    location.assign(record.url);
+  }
+  function returnFromReader() {
+    if (state.reader?.kind !== 'post' || !postInfo(location.href)) { closeReader(); return; }
+    const current = location.pathname + location.search;
+    const routes = postReturnRoutes();
+    const source = routes[routes.length - 1];
+    // 只使用当前帖子对应的来源；直接进入帖子或失效的来源回到 /home。
+    const destination = source?.to === current ? routes.pop().from : '/home';
+    savePostReturnRoutes(destination === '/home' ? [] : routes);
+    location.assign(destination);
   }
   function collectConversation(scope, articles, info) {
     if (state.conversation?.id !== info.id) state.conversation = {
@@ -966,7 +1008,7 @@
       case 'read': case 'note': case 'read-comment': if (record) readRecord(record); break;
       case 'star': star(record); break;
       case 'reader-star': star(state.reader); break;
-      case 'back': closeReader(); break;
+      case 'back': returnFromReader(); break;
       case 'toggle': toggle(); break;
       case 'more': loadMore(); break;
       case 'more-comments': loadComments(); break;
