@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X → 飞书云文档外观
 // @namespace    local.x-feishu-docs
-// @version      1.5.3
+// @version      1.5.4
 // @description  将 X 时间线、用户主页和帖子讨论显示为飞书云文档风格，保留原文、媒体与原生操作。
 // @author       KAMIENDER
 // @homepageURL  https://github.com/KAMIENDER/x-feishu-docs
@@ -166,7 +166,7 @@
   function boot() {
     try {
       host = document.createElement('div');
-      host.id = HOST_ID; host.dataset.version = '1.5.3';
+      host.id = HOST_ID; host.dataset.version = '1.5.4';
       host.hidden = !activeMode();
       shadow = host.attachShadow({ mode: 'open' });
       shadow.innerHTML = `<style>${css}</style><div class="app">
@@ -1073,15 +1073,29 @@
     conversation ? renderComments() : renderList();
     let idle = 0, previous = count();
     try {
+      if (!conversation) {
+        // 文档列表保留了屏外帖文，但 X 返回后可能停在较靠前的位置。
+        // 从最后已读帖的原生位置接续，不能把重走缓存区的几屏当作没有新内容。
+        const tail = [...state.posts.values()].filter(record => record.kind === 'post' && Number.isFinite(record.nativeY))
+          .reduce((last, record) => !last || record.order > last.order ? record : last, null);
+        if (tail && tail.nativeY - 120 > window.scrollY + innerHeight) {
+          window.scrollTo({top: Math.max(0, tail.nativeY - 120), behavior: 'instant'});
+          await new Promise(resolve => setTimeout(resolve, 650));
+          if (route !== location.pathname + location.search || state.reader || state.navigating) return;
+          collect(); previous = count();
+        }
+      }
       // X 按原帖高度虚拟化页面；连续逐屏收集同一讨论/时间线的一批，避免跳过屏外节点。
       for (let step = 0; step < 32 && Date.now() - progress.lastLoad < 22000; step++) {
         if (!activeMode() || state.nativeUI || state.navigating || route !== location.pathname + location.search) break;
         if (conversation ? state.reader?.id !== conversation.id || state.conversation !== conversation || conversation.complete
           : state.reader || state.filter !== 'all' || state.query) break;
         if (count() - progress.loadStart >= LOAD_BATCH_SIZE) break;
+        const beforeY = window.scrollY;
         window.scrollBy({ top:Math.max(600, innerHeight * 0.85), behavior:'instant' });
         await new Promise(resolve => setTimeout(resolve, 650)); collect();
-        idle = count() === previous ? idle + 1 : 0; previous = count();
+        // 时间线仍在推进时，遇到缓存帖不代表已经到末尾；评论区保留原有停止条件。
+        idle = count() === previous && (conversation || window.scrollY <= beforeY + 1) ? idle + 1 : 0; previous = count();
         if (idle >= 7) break;
       }
     } finally {
