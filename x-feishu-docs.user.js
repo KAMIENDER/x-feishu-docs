@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X → 飞书云文档外观
 // @namespace    local.x-feishu-docs
-// @version      1.4.4
+// @version      1.5.0
 // @description  将 X 时间线、用户主页和帖子讨论显示为飞书云文档风格，保留原文、媒体与原生操作。
 // @author       KAMIENDER
 // @homepageURL  https://github.com/KAMIENDER/x-feishu-docs
@@ -52,6 +52,7 @@
   const savedNotes = load('notes', []);
   const state = {
     enabled: load('enabled', true),
+    privacy: load('privacy', false) === true, revealedMedia: new Set(),
     favorites: new Set(Array.isArray(savedIds) ? savedIds : []),
     notes: Array.isArray(savedNotes) ? savedNotes : [],
     posts: new Map(), query: '', filter: 'all', reader: null, conversation: null,
@@ -124,6 +125,9 @@
   // 原生弹窗保留在 X 的 DOM 中。X 的多个祖先有 z-index:0，须抬高 react-root 才能越过外观层。
   GM_addStyle(`html.${CLASS_NAME}{scrollbar-width:none!important;background:#fff!important}html.${CLASS_NAME}::-webkit-scrollbar{display:none!important}html.${CLASS_NAME} body>:not(#${HOST_ID}){visibility:hidden!important;pointer-events:none!important}#${HOST_ID}{position:fixed!important;inset:0!important;z-index:2147483646!important;display:block!important;opacity:1!important;pointer-events:auto!important}#${HOST_ID}[hidden]{display:none!important}html.${CLASS_NAME}.xdocs-native-ui #react-root{position:relative!important;z-index:2147483647!important}html.${CLASS_NAME}.xdocs-native-ui #layers{position:relative!important;z-index:2147483647!important}html.${CLASS_NAME}.xdocs-native-ui #layers,html.${CLASS_NAME}.xdocs-native-ui #layers *{visibility:visible!important;pointer-events:auto!important}html.${CLASS_NAME}.xdocs-native-ui .xdocs-media-ancestor{transform:none!important;filter:none!important;perspective:none!important;contain:none!important}html.${CLASS_NAME}.xdocs-native-ui .xdocs-native-media{position:fixed!important;inset:12vh 15vw!important;width:70vw!important;height:76vh!important;max-height:76vh!important;background:#000!important}html.${CLASS_NAME}.xdocs-native-ui .xdocs-native-media video{width:100%!important;height:100%!important;object-fit:contain!important}html.${CLASS_NAME}.xdocs-native-ui .xdocs-native-surface{z-index:2147483647!important}html.${CLASS_NAME}.xdocs-native-ui .xdocs-native-surface,html.${CLASS_NAME}.xdocs-native-ui .xdocs-native-surface *{visibility:visible!important;pointer-events:auto!important}html.${CLASS_NAME}.xdocs-native-ui #layers [role="dialog"],html.${CLASS_NAME}.xdocs-native-ui #layers [role="dialog"] *,html.${CLASS_NAME}.xdocs-native-ui #layers [role="menu"],html.${CLASS_NAME}.xdocs-native-ui #layers [role="menu"] *{visibility:visible!important;pointer-events:auto!important}`);
   if (activeMode()) document.documentElement.classList.add(CLASS_NAME);
+  // 原生回复浮层也可能带有媒体。遮住整个照片/播放器区域，避免封面背景或控件漏出内容。
+  GM_addStyle(`html.xdocs-privacy :is(#react-root,#layers) :is(img,video,[data-testid="tweetPhoto"],[data-testid="videoPlayer"]){filter:blur(32px)!important;opacity:0!important}html.xdocs-privacy :is(#react-root,#layers) [data-xdocs-privacy-revealed],html.xdocs-privacy :is(#react-root,#layers) [data-xdocs-privacy-revealed] :is(img,video,[data-testid="tweetPhoto"],[data-testid="videoPlayer"]){filter:none!important;opacity:1!important}`);
+  if (activeMode() && state.privacy) document.documentElement.classList.add('xdocs-privacy');
 
   const css = `
     :host{all:initial;color:#1f2329;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color-scheme:light}
@@ -153,6 +157,7 @@
     .comments{margin-top:40px;padding-top:24px;border-top:1px solid #dee0e3}.comments-heading{display:flex;align-items:baseline;gap:12px;margin-bottom:8px}.comments-heading h2{font-size:18px;font-weight:500;margin:0}.comments-status,.comments-empty{font-size:12px;color:#8f959e}.comment{padding:22px 0;border-bottom:1px solid #eff0f1}.comment-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px}.comment-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover}.comment-handle,.comment-date{color:#8f959e;font-size:12px}.comment .body-text{min-height:0;font-size:14px;line-height:1.8;margin-top:12px}.comment .reader-media{margin:16px 0}.comment .reader-media img,.comment .reader-media video{max-height:45vh}.comment .post-actions{border:0;margin-top:14px;padding-top:0;gap:8px}.comment .post-actions button,.comment-thread,.comment-controls button{font-size:12px;padding:5px 9px;border:1px solid #dee0e3;border-radius:5px}.comment-thread{margin-left:auto;color:#646a73}.comment-controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}.comments-footer{padding-top:20px;text-align:center}.comments-footer small{display:block;margin-top:8px;color:#8f959e;font-size:12px}
     .owner button{padding:0;min-width:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit}.owner button:hover,.author-link:hover{color:#3370ff}.author-link{padding:0;color:inherit}.profile-card{max-width:860px;border:1px solid #dee0e3;border-radius:8px;margin:6px 0 24px;padding:20px}.profile-top{display:flex;gap:12px;align-items:center}.profile-avatar{width:44px;height:44px;border-radius:50%;object-fit:cover}.profile-name{font-size:18px;font-weight:500}.profile-handle,.profile-stats{font-size:12px;color:#8f959e}.profile-follow{margin-left:auto;padding:7px 18px;border:1px solid #dee0e3;border-radius:6px}.profile-follow:not([aria-pressed="true"]){background:#3370ff;border-color:#3370ff;color:#fff}.profile-bio{margin:16px 0 12px;white-space:pre-wrap;line-height:1.7}.profile-bio a{color:#3370ff}.profile-stats{display:flex;gap:18px}
     .media-preview{position:fixed;inset:0;background:rgba(18,22,28,.88);z-index:30;padding:58px 30px 24px;display:flex;align-items:center;justify-content:center}.media-preview>img{max-width:100%;max-height:100%;object-fit:contain}.media-preview>button{position:absolute;top:14px;right:20px;color:#fff;border:1px solid #8f959e;border-radius:6px;padding:7px 14px;background:#20242c}
+    .privacy-switch{display:inline-flex;align-items:center;gap:5px;padding:5px 8px;border-radius:5px;color:#646a73;font-size:12px;white-space:nowrap}.privacy-switch[aria-pressed="true"]{color:#245bdb;background:#edf2ff}.privacy-switch .icon{width:16px;height:16px}.privacy-media{position:relative;border-radius:6px}.privacy-media.is-private{overflow:hidden;background:#f2f3f5}.privacy-media.is-private:not(.privacy-avatar){min-height:180px}.privacy-media.is-private>.privacy-content{filter:blur(32px);opacity:0;pointer-events:none}.privacy-media>.privacy-reveal{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:12px;background:linear-gradient(135deg,#e5e8ed,#f3f4f6 50%,#e4e7ec);color:#646a73;font-size:13px}.privacy-media>.privacy-hide{position:absolute;top:8px;right:8px;display:flex;align-items:center;gap:4px;width:auto;padding:5px 8px;border:1px solid #dee0e3;border-radius:5px;background:#fff;color:#646a73;font-size:12px}.privacy-avatar{display:inline-block;flex:none;border-radius:50%;overflow:hidden}.privacy-avatar>.privacy-content,.privacy-avatar>.privacy-content>img{width:100%;height:100%;display:block}.privacy-avatar .privacy-reveal{padding:0}.privacy-avatar .privacy-reveal span,.privacy-avatar .privacy-hide span{display:none}.privacy-avatar .privacy-reveal .icon,.privacy-avatar .privacy-hide .icon{width:12px;height:12px}.privacy-avatar>.privacy-hide{inset:0;width:100%;padding:0;justify-content:center;border:0;border-radius:50%;opacity:0}.privacy-avatar:hover>.privacy-hide,.privacy-avatar>.privacy-hide:focus-visible{opacity:1}.owner-dot>.privacy-avatar{width:100%;height:100%}.profile-top>.privacy-avatar{width:44px;height:44px}.comment-header>.privacy-avatar{width:28px;height:28px}
     @media(max-width:1100px){.app{grid-template-columns:240px minmax(0,1fr)}.table th:nth-child(4),.table td:nth-child(4){display:none}.table th:first-child{width:48%}.table th:nth-child(2){width:15%}.table th:nth-child(3){width:17%}.table th:nth-child(5){width:16%}.tabs{gap:18px}.view-tools{gap:6px}}
     @media(max-width:760px){.app{grid-template-columns:1fr}.sidebar{display:none}.topbar{height:58px;padding:0 16px}.scroll{padding:0 16px 20px}.actions{gap:8px;padding-bottom:14px}.action-card{height:58px;gap:8px;padding:0 10px}.card-text small,.action-card>.chevron{display:none}.action-card>.icon{width:21px;height:21px}.card-text strong{font-size:13px}.tabs{gap:16px}.tab{font-size:13px}.table th:nth-child(2),.table td:nth-child(2),.table th:nth-child(5),.table td:nth-child(5){display:none}.table th:first-child{width:72%}.table th:nth-child(3){width:22%}.table th:last-child{width:32px}.row-title{gap:8px;font-size:13px}.table td{padding:0 4px}.view-tools .filter-label,.view-switch{display:none}.paper{padding:35px 24px 70px}.paper h1,.note-title{font-size:24px}.reader-toolbar{padding:8px 12px}.top-tools{gap:5px}.popover{right:12px;width:min(286px,calc(100vw - 24px))}}
   `;
@@ -160,7 +165,7 @@
   function boot() {
     try {
       host = document.createElement('div');
-      host.id = HOST_ID; host.dataset.version = '1.4.4';
+      host.id = HOST_ID; host.dataset.version = '1.5.0';
       host.hidden = !activeMode();
       shadow = host.attachShadow({ mode: 'open' });
       shadow.innerHTML = `<style>${css}</style><div class="app">
@@ -168,7 +173,7 @@
           <nav class="nav"><button class="nav-item active" data-nav="home">${icon('home')}主页</button><button class="nav-item" data-nav="all">${icon('drive')}云盘</button><button class="nav-item" data-nav="saved">${icon('book')}知识库</button><button class="nav-item" data-nav="notes">${icon('lines')}智能纪要</button></nav>
           <div class="section-label">置顶知识库</div><button class="side-note" data-action="new-note">${icon('plus')}<span>新建或置顶知识库</span></button><div class="section-label">我的文档库<button class="icon-btn" data-action="new-note" title="新建">${icon('plus')}</button></div><div id="side-notes"></div><div class="side-bottom"><button class="icon-btn" data-nav="all" title="全部文档">${icon('disk')}</button><button class="icon-btn" data-action="settings" title="个人设置">${icon('lock')}</button><button class="icon-btn" data-filter="trash" title="回收站">${icon('trash')}</button></div>
         </aside>
-        <main class="main"><header class="topbar"><div class="page-heading"><button class="icon-btn restore-sidebar" data-action="collapse" title="展开导航">${icon('collapse')}</button><h1 class="page-title" id="page-title">主页</h1></div><div class="top-tools"><button class="icon-btn" data-action="search" title="搜索">${icon('search')}</button><button class="icon-btn" data-action="settings" title="个人设置">${icon('organization')}</button><button class="icon-btn" data-action="help" title="帮助">${icon('light')}</button><button class="icon-btn" data-action="help" title="帮助">${icon('grid')}</button><button class="avatar" data-action="settings" title="个人设置">文</button></div></header>
+        <main class="main"><header class="topbar"><div class="page-heading"><button class="icon-btn restore-sidebar" data-action="collapse" title="展开导航">${icon('collapse')}</button><h1 class="page-title" id="page-title">主页</h1></div><div class="top-tools"><button class="privacy-switch" data-action="privacy" aria-pressed="false">${icon('lock')}<span class="privacy-label">隐私模式：关</span></button><button class="icon-btn" data-action="search" title="搜索">${icon('search')}</button><button class="icon-btn" data-action="settings" title="个人设置">${icon('organization')}</button><button class="icon-btn" data-action="help" title="帮助">${icon('light')}</button><button class="icon-btn" data-action="help" title="帮助">${icon('grid')}</button><button class="avatar" data-action="settings" title="个人设置">文</button></div></header>
           <section class="scroll" id="list-view"><section id="profile-card" class="profile-card" hidden></section><div class="actions"><button class="action-card" data-action="new-note">${icon('new')}<span class="card-text"><strong>新建</strong><small>新建文档</small></span><span class="chevron">${icon('chevron')}</span></button><button class="action-card upload" data-action="upload">${icon('upload')}<span class="card-text"><strong>上传</strong><small>上传本地文件</small></span><span class="chevron">${icon('chevron')}</span></button><button class="action-card template" data-action="templates">${icon('template')}<span class="card-text"><strong>模板库</strong><small>选择模板快速新建</small></span></button></div>
             <div class="list-tools"><div class="tabs"><button class="tab active" data-filter="all">最近访问</button><button class="tab" data-filter="own">归我所有</button><button class="tab" data-filter="read">已阅读</button><button class="tab" data-filter="saved">收藏</button><button class="icon-btn" data-action="new-note" title="新建文档">${icon('plus')}</button></div><div class="view-tools"><button data-action="filters">${icon('filter')}<span class="filter-label">筛选</span></button><button data-action="settings">${icon('settings')}<span class="filter-label">显示设置</span></button><div class="view-switch"><button class="active" data-action="view-list" title="列表视图">${icon('list')}</button><button data-action="view-grid" title="网格视图">${icon('tiles')}</button></div></div></div>
             <table class="table"><thead><tr><th>标题</th><th>位置</th><th>所有者</th><th>创建时间</th><th>最近访问 ↓</th><th></th></tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty"><div>${icon('doc')}</div><p id="empty-message">正在整理文档…</p><button data-action="toggle">显示原界面</button></div><div class="footer"><button class="load-more" data-action="more">加载更多</button><small id="load-status"></small></div>
@@ -216,6 +221,7 @@
     } catch (error) {
       state.enabled = false;
       document.documentElement.classList.remove(CLASS_NAME);
+      document.documentElement.classList.remove('xdocs-privacy');
       if (host) host.hidden = true;
       for (const [node, previous] of inertRoots) node.inert = previous;
       inertRoots.clear();
@@ -248,6 +254,7 @@
   function applyMode() {
     if (!host) return;
     const active = activeMode();
+    syncPrivacyControls();
     if (!active) { state.nativeUI = false; document.documentElement.classList.remove('xdocs-native-ui'); }
     host.hidden = !active;
     document.documentElement.classList.toggle(CLASS_NAME, active);
@@ -278,7 +285,18 @@
     if (state.nativeUI) return;
     document.querySelectorAll('video,audio').forEach(media => { if (!media.paused) media.pause(); });
   }
-  document.addEventListener('play', event => { if (activeMode() && !state.nativeUI && /^(VIDEO|AUDIO)$/.test(event.target.tagName)) event.target.pause(); }, true);
+  document.addEventListener('play', event => {
+    if (activeMode() && /^(VIDEO|AUDIO)$/.test(event.target.tagName)
+      && (!state.nativeUI || (state.privacy && !event.target.closest('[data-xdocs-privacy-revealed]')))) event.target.pause();
+  }, true);
+  document.addEventListener('click', event => {
+    if (!activeMode() || !state.privacy || event.composedPath().includes(host)) return;
+    const media = event.target.closest?.('[data-testid="tweetPhoto"],[data-testid="videoPlayer"]') || event.target.closest?.('img,video');
+    if (!media || media.closest('[data-xdocs-privacy-revealed]')) return;
+    // 原生浮层第一次点击只揭示该媒体，不顺带打开链接、播放或触发其他 X 操作。
+    event.preventDefault(); event.stopImmediatePropagation();
+    media.setAttribute('data-xdocs-privacy-revealed', 'true');
+  }, true);
   document.addEventListener('keydown', event => {
     if (event.altKey && event.shiftKey && event.code === 'KeyD') { event.preventDefault(); event.stopImmediatePropagation(); toggle(); }
     if (event.code === 'Escape' && shadow && !$('#media-preview').hidden) { event.preventDefault(); event.stopImmediatePropagation(); closeMediaPreview(); return; }
@@ -292,6 +310,51 @@
     if (activeMode() && shadow && event.composedPath().includes(host)) event.stopImmediatePropagation();
   }, true);
   GM_registerMenuCommand('切换：飞书云文档 / X（Alt+Shift+D）', toggle);
+  GM_registerMenuCommand('开启 / 关闭隐私模式', togglePrivacy);
+
+  function syncPrivacyControls() {
+    document.documentElement.classList.toggle('xdocs-privacy', activeMode() && state.privacy);
+    shadow?.querySelectorAll('[data-action="privacy"]').forEach(button => {
+      button.setAttribute('aria-pressed', String(state.privacy));
+      button.setAttribute('aria-label', '隐私模式：' + (state.privacy ? '开启' : '关闭'));
+      button.title = state.privacy ? '点击关闭隐私模式' : '点击开启隐私模式';
+      const label = button.querySelector('.privacy-label');
+      if (label) label.textContent = '隐私模式：' + (state.privacy ? '开' : '关');
+    });
+  }
+  function protectMedia(content, key, label, avatar = false) {
+    const gate = make('div', 'privacy-media' + (avatar ? ' privacy-avatar' : ''));
+    gate.dataset.privacyKey = key;
+    const body = make('div', 'privacy-content'); body.append(content);
+    const reveal = make('button', 'privacy-reveal'); reveal.dataset.action = 'reveal-media';
+    reveal.setAttribute('aria-label', label + '已隐藏，点击显示');
+    reveal.innerHTML = icon('lock'); reveal.append(make('span', '', label + '已隐藏，点击显示'));
+    const hide = make('button', 'privacy-hide'); hide.dataset.action = 'hide-media';
+    hide.setAttribute('aria-label', '重新隐藏' + label);
+    hide.innerHTML = icon('lock'); hide.append(make('span', '', '重新隐藏'));
+    gate.append(body, reveal, hide); updatePrivacyGate(gate); return gate;
+  }
+  function updatePrivacyGate(gate) {
+    const hidden = state.privacy && !state.revealedMedia.has(gate.dataset.privacyKey);
+    gate.classList.toggle('is-private', hidden);
+    gate.querySelector('.privacy-content').inert = hidden;
+    gate.querySelector('.privacy-reveal').hidden = !hidden;
+    gate.querySelector('.privacy-hide').hidden = !state.privacy || hidden;
+    // 模糊仍可能辨认颜色和轮廓；同时使用不透明遮罩，且不允许隐藏的视频继续出声。
+    if (hidden) gate.querySelectorAll('video,audio').forEach(media => media.pause());
+  }
+  function resetMediaReveals() {
+    // 单项揭示只留在当前阅读过程，刷新、换帖或再次开启隐私模式都不能自动放行。
+    state.revealedMedia.clear();
+    document.querySelectorAll('[data-xdocs-privacy-revealed]').forEach(node => node.removeAttribute('data-xdocs-privacy-revealed'));
+    shadow?.querySelectorAll('.privacy-media').forEach(updatePrivacyGate);
+  }
+  function togglePrivacy() {
+    closeMediaPreview(); state.privacy = !state.privacy; save('privacy', state.privacy);
+    syncPrivacyControls(); resetMediaReveals();
+    if (state.privacy) document.querySelectorAll('video,audio').forEach(media => media.pause());
+    toast(state.privacy ? '隐私模式已开启，点击单个媒体后才显示。' : '隐私模式已关闭。');
+  }
 
   function scheduleScan() {
     if (!activeMode() || scanTimer) return;
@@ -542,7 +605,7 @@
     if (state.profileKey === key) return;
     state.profileKey = key; box.replaceChildren();
     const top = make('div', 'profile-top');
-    if (profile.avatar) { const image = make('img', 'profile-avatar'); image.src = profile.avatar; image.alt = profile.name; top.append(image); }
+    if (profile.avatar) { const image = make('img', 'profile-avatar'); image.src = profile.avatar; image.alt = profile.name; top.append(protectMedia(image, 'profile-avatar:' + handle + ':' + profile.avatar, '头像', true)); }
     const info = make('div'); info.append(make('div', 'profile-name', profile.name), make('div', 'profile-handle', '@' + handle)); top.append(info);
     if (!profile.own) {
       const follow = make('button', 'profile-follow', profile.following ? '取消关注' : '关注');
@@ -586,8 +649,10 @@
       const avatar = row.querySelector('.owner-dot');
       if (/^https:\/\/pbs\.twimg\.com\//.test(record.avatar || '')) {
         let image = avatar.querySelector('img');
-        if (!image) { avatar.textContent = ''; image = make('img'); image.alt = ''; avatar.append(image); }
+        const key = 'list-avatar:' + record.id + ':' + record.avatar;
+        if (!image) { avatar.textContent = ''; image = make('img'); image.alt = ''; avatar.append(protectMedia(image, key, '头像', true)); }
         if (image.getAttribute('src') !== record.avatar) image.src = record.avatar;
+        const gate = avatar.querySelector('.privacy-media'); gate.dataset.privacyKey = key; updatePrivacyGate(gate);
       } else avatar.textContent = Array.from(record.author || '我')[0];
       const authorButton = row.querySelector('.owner button');
       authorButton.textContent = record.author || '我'; authorButton.dataset.handle = record.handle || '';
@@ -644,20 +709,23 @@
     }
     for (const media of record.media || []) {
       const figure = make('figure', 'reader-media');
+      const content = make('div');
       if (media.kind === 'image') {
         const button = make('button'); button.dataset.action = 'preview-image'; button.dataset.imageSrc = media.src; button.dataset.imageAlt = media.alt || '原始图片';
         button.setAttribute('aria-label', '查看原始图片');
         const image = make('img'); image.src = media.src; image.alt = media.alt || '帖文图片'; image.loading = 'lazy';
-        button.append(image); figure.append(button);
+        button.append(image); content.append(button);
       } else if (media.src) {
         const video = make('video'); video.src = media.src; video.controls = true; video.preload = 'metadata';
-        if (media.poster) video.poster = media.poster; figure.append(video);
+        if (media.poster) video.poster = media.poster; content.append(video);
       } else {
         const button = make('button'); button.dataset.xAction = 'media'; button.dataset.recordId = record.id; button.dataset.video = 'true';
         if (media.poster) { const image = make('img'); image.src = media.poster; image.alt = '视频封面'; button.append(image); }
-        button.append(make('span', 'attachments', '打开原生视频播放器')); figure.append(button);
+        button.append(make('span', 'attachments', '打开原生视频播放器')); content.append(button);
       }
-      if (media.alt && media.alt !== 'Image' && media.alt !== '图像') figure.append(make('figcaption', '', media.alt));
+      if (media.alt && media.alt !== 'Image' && media.alt !== '图像') content.append(make('figcaption', '', media.alt));
+      const key = record.id + ':media:' + media.kind + ':' + (media.src || media.poster || media.index || 'video');
+      figure.append(protectMedia(content, key, media.kind === 'image' ? '图片' : '视频'));
       target.append(figure);
     }
     // 时间线摘要需要 X 自己加载完整原文；保留原帖链接，不伪造缺失正文。
@@ -777,7 +845,7 @@
       if (item?.dataset.fingerprint === commentKey(record)) continue;
       const updated = make('article', 'comment'); updated.dataset.id = record.id; updated.dataset.fingerprint = commentKey(record);
       const header = make('header', 'comment-header');
-      if (record.avatar) { const image = make('img', 'comment-avatar'); image.src = record.avatar; image.alt = ''; image.loading = 'lazy'; header.append(image); }
+      if (record.avatar) { const image = make('img', 'comment-avatar'); image.src = record.avatar; image.alt = ''; image.loading = 'lazy'; header.append(protectMedia(image, 'comment-avatar:' + record.id + ':' + record.avatar, '头像', true)); }
       const author = make('button', 'author-link', record.author); author.dataset.action = 'profile'; author.dataset.handle = record.handle;
       const thread = make('button', 'comment-thread', '查看回复'); thread.dataset.action = 'read-comment'; thread.dataset.id = record.id;
       header.append(author, make('span', 'comment-handle', record.handle ? '@' + record.handle : ''), make('time', 'comment-date', formatDate(record.created)), thread);
@@ -811,6 +879,7 @@
 
   function openReader(record) {
     closeMediaPreview();
+    if (state.reader?.id !== record.id) resetMediaReveals();
     shadow.querySelectorAll('video,audio').forEach(media => media.pause());
     flushNote(); state.reader = record; record.readAt = Date.now();
     if (record.kind === 'note') save('notes', state.notes);
@@ -847,6 +916,7 @@
   function closeReader() {
     if (!shadow) return;
     closeMediaPreview();
+    resetMediaReveals();
     shadow.querySelectorAll('video,audio').forEach(media => media.pause());
     flushNote(); state.reader = null;
     $('#reader-view').hidden = true; $('#reader-toolbar').hidden = true; $('#list-view').hidden = false;
@@ -912,7 +982,8 @@
     if (!box.hidden && box.dataset.kind === kind) { box.hidden = true; return; }
     box.dataset.kind = kind; box.hidden = false;
     if (kind === 'settings') {
-      box.innerHTML = `<strong>显示设置</strong><p>标题取自正文首行，长标题会截短；悬停可查看完整首行。</p><hr><button data-action="toggle">显示 X 原界面</button><p>快捷键：Alt + Shift + D<br>地址栏仍然显示原网站地址。</p>`;
+      box.innerHTML = `<strong>显示设置</strong><button data-action="privacy">${icon('lock')}<span class="privacy-label">隐私模式</span></button><p>开启后图片、视频和头像完全遮蔽，点击单个媒体才显示；刷新或换帖后重新隐藏。</p><hr><p>标题取自正文首行，长标题会截短；悬停可查看完整首行。</p><hr><button data-action="toggle">显示 X 原界面</button><p>快捷键：Alt + Shift + D<br>地址栏仍然显示原网站地址。</p>`;
+      syncPrivacyControls();
     } else if (kind === 'filters') {
       box.innerHTML = '<strong>筛选文档</strong><button data-filter="all">全部文档</button><button data-filter="own">归我所有</button><button data-filter="read">已阅读</button><button data-filter="saved">收藏</button><button data-filter="notes">本地笔记</button>';
     } else if (kind === 'row-menu' && record) {
@@ -938,6 +1009,7 @@
     $('#media-preview').hidden = true; $('#media-preview img').hidden = true;
     if (state.mediaNode) {
       state.mediaNode.querySelectorAll('video,audio').forEach(media => media.pause());
+      state.mediaNode.removeAttribute('data-xdocs-privacy-revealed');
       state.mediaNode.classList.remove('xdocs-native-media', 'xdocs-native-surface'); state.mediaNode = null;
       for (const node of state.mediaAncestors || []) node.classList.remove('xdocs-media-ancestor');
       state.mediaAncestors = []; updateNativeUI();
@@ -949,7 +1021,10 @@
     const player = article.querySelector('[data-testid="videoPlayer"]') || article.querySelector('video')?.parentElement;
     if (!player) { toast('当前原帖尚未加载播放器，可打开原页面查看。'); return; }
     // 只改变现有播放器的展示位置；不搬动 React 节点，不复制 MediaSource blob 或猜测媒体路由。
-    closeMediaPreview(); beginNativeUI(); state.mediaNode = player;
+    closeMediaPreview();
+    // 此入口来自用户已点击的视频；先放行该播放器，再展示原生浮层，避免误放行其他媒体。
+    if (state.privacy) player.setAttribute('data-xdocs-privacy-revealed', 'true');
+    beginNativeUI(); state.mediaNode = player;
     // 虚拟列表的 transform 会让 fixed 播放器跟随旧单元格偏移；预览期间仅解除这些祖先，关闭后还原。
     state.mediaAncestors = [];
     for (let node = player.parentElement; node && node !== document.body; node = node.parentElement) {
@@ -968,6 +1043,16 @@
   function onClick(event) {
     const button = event.target.closest('button');
     if (!button) return;
+    if (button.dataset.action === 'reveal-media' || button.dataset.action === 'hide-media') {
+      const gate = button.closest('.privacy-media');
+      if (!gate || !state.privacy) return;
+      const reveal = button.dataset.action === 'reveal-media';
+      if (reveal) state.revealedMedia.add(gate.dataset.privacyKey);
+      else { closeMediaPreview(); state.revealedMedia.delete(gate.dataset.privacyKey); }
+      shadow.querySelectorAll('.privacy-media').forEach(updatePrivacyGate);
+      (reveal ? gate.querySelector('.privacy-hide') : gate.querySelector('.privacy-reveal')).focus();
+      return;
+    }
     if (button.dataset.action === 'preview-image') {
       closeMediaPreview(); const image = $('#media-preview img');
       image.src = button.dataset.imageSrc; image.alt = button.dataset.imageAlt; image.hidden = false; $('#media-preview').hidden = false; return;
@@ -1010,6 +1095,7 @@
       case 'reader-star': star(state.reader); break;
       case 'back': returnFromReader(); break;
       case 'toggle': toggle(); break;
+      case 'privacy': togglePrivacy(); break;
       case 'more': loadMore(); break;
       case 'more-comments': loadComments(); break;
       case 'expand-comments': {
