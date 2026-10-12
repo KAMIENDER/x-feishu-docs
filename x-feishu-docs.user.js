@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X → 飞书云文档外观
 // @namespace    local.x-feishu-docs
-// @version      1.5.0
+// @version      1.5.3
 // @description  将 X 时间线、用户主页和帖子讨论显示为飞书云文档风格，保留原文、媒体与原生操作。
 // @author       KAMIENDER
 // @homepageURL  https://github.com/KAMIENDER/x-feishu-docs
@@ -59,6 +59,7 @@
     ownHandle: '', profile: null, profileKey: '', sequence: 0, loading: false, lastLoad: 0, loadStart: 0,
     nativeUI: false, nativeOpened: false, nativeUntil: 0,
     route: location.pathname + location.search, autoOpened: false,
+    routeViews: new Map(), restoredList: false, navigating: false,
   };
   let host, shadow, scanTimer, observer, noteTimer, toastTimer;
   let originalTitle = document.title;
@@ -165,7 +166,7 @@
   function boot() {
     try {
       host = document.createElement('div');
-      host.id = HOST_ID; host.dataset.version = '1.5.0';
+      host.id = HOST_ID; host.dataset.version = '1.5.3';
       host.hidden = !activeMode();
       shadow = host.attachShadow({ mode: 'open' });
       shadow.innerHTML = `<style>${css}</style><div class="app">
@@ -190,32 +191,20 @@
       });
       $('#list-view').addEventListener('scroll', () => {
         const view = $('#list-view');
-        if (view.scrollTop > 0 && view.scrollHeight - view.scrollTop - view.clientHeight < 180 && state.filter === 'all' && !state.query) loadMore();
+        if (!state.restoredList && view.scrollTop > 0 && view.scrollHeight - view.scrollTop - view.clientHeight < 180 && state.filter === 'all' && !state.query) loadMore();
       }, { passive: true });
       $('#file-input').addEventListener('change', importFile);
       document.addEventListener('click', event => { if (!event.composedPath().includes(host)) $('#popover').hidden = true; });
       observer = new MutationObserver(scheduleScan);
       observer.observe(document.body, { childList: true, subtree: true, characterData: true });
       if (document.head) new MutationObserver(brandPage).observe(document.head, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['href', 'rel'] });
+      restoreInitialView();
       applyMode();
       collect();
       // 不修改 history API；轮询只处理 X 自己的 SPA 路由切换。
       setInterval(() => {
         if (!state.enabled) return;
-        const route = location.pathname + location.search;
-        if (route !== state.route) {
-          const overlay = /^\/compose\//.test(location.pathname) || /\/status\/\d+\/(photo|video)\/\d+\/?$/.test(location.pathname);
-          // X 的原生弹窗会改变地址；打开和关闭浮层不应清空文档及阅读位置。
-          if (state.nativeUI && overlay) {
-            state.overlayReturn ||= state.route; state.route = route;
-          } else if (state.overlayReturn === route) {
-            state.overlayReturn = null; state.route = route; applyMode();
-          } else {
-            state.overlayReturn = null; state.route = route;
-            state.posts.clear(); state.conversation = null; state.sequence = 0; state.autoOpened = false;
-            applyMode(); closeReader(); $('#list-view').scrollTop = 0;
-          }
-        }
+        updateRoute();
         collect();
       }, 1200);
     } catch (error) {
@@ -511,6 +500,8 @@
 
   function collect() {
     if (!activeMode() || !shadow) return;
+    // DOM 更新可能早于路由轮询；先切换页面状态，避免把详情评论混进来源列表。
+    updateRoute();
     updateNativeUI();
     // 原生视频预览临时解除虚拟单元格的 transform；播放期间不把临时位置当成讨论区排序。
     if (state.mediaNode) return;
@@ -525,6 +516,8 @@
     for (const article of articles) {
       const {info, time} = articleIdentity(article);
       if (!info) continue;
+      // 返回时保留原列表及其顺序，新时间线条目只在用户继续加载时加入。
+      if (!routeInfo && (state.restoredList || state.navigating) && !state.posts.has(info.id)) continue;
       const conversation = state.conversation;
       const y = article.getBoundingClientRect().top + window.scrollY;
       const replyTo = routeInfo && conversation?.startY !== null && info.id !== routeInfo.id
@@ -542,6 +535,7 @@
         avatar: safeURL(article.querySelector('img[src*="profile_images"]')?.getAttribute('src')),
         created: time?.getAttribute('datetime') || previous?.created || '',
         order: previous?.order || ++state.sequence, seen: previous?.seen || Date.now(), readAt: previous?.readAt || 0,
+        nativeY: y,
         images: article.querySelectorAll('[data-testid="tweetPhoto"]').length,
         video: !!article.querySelector('video,[data-testid="videoPlayer"]'),
         truncated: !!article.querySelector('[data-testid="tweet-text-show-more-link"]'),
@@ -590,10 +584,10 @@
     const handle = profileHandle(), scope = document.querySelector('[data-testid="primaryColumn"]');
     const nameNode = handle && scope?.querySelector('[data-testid="UserName"]');
     const box = $('#profile-card');
-    if (!nameNode) { state.profile = null; state.profileKey = ''; box.hidden = true; return; }
+    if (!nameNode && (!handle || state.profile?.handle !== handle)) { state.profile = null; state.profileKey = ''; box.hidden = true; return; }
     const control = profileFollowControl();
-    const avatar = scope.querySelector(`[data-testid="UserAvatar-Container-${handle}"] img`);
-    const profile = {handle, name:plainText(nameNode).split('@')[0].trim() || handle,
+    const avatar = scope?.querySelector(`[data-testid="UserAvatar-Container-${handle}"] img`);
+    const profile = !nameNode ? state.profile : {handle, name:plainText(nameNode).split('@')[0].trim() || handle,
       bio:richText(scope.querySelector('[data-testid="UserDescription"]')),
       avatar:safeURL(avatar?.currentSrc || avatar?.getAttribute('src')),
       following:!!control?.dataset.testid.endsWith('-unfollow'), available:!!control,
@@ -760,27 +754,146 @@
     try { sessionStorage.setItem(STORE + 'returnRoutes', JSON.stringify(routes)); }
     catch { /* 标签页存储不可用时，返回真实 X 首页，不能在详情路由上伪造首页。 */ }
   }
-  function navigateToPost(record) {
+  function rememberRouteView() {
+    const route = state.overlayReturn || state.route;
+    if (!validReturnPath(route)) return;
+    const conversation = state.conversation;
+    const view = {
+      route, savedAt: Date.now(), posts: [...state.posts.entries()], sequence: state.sequence,
+      filter: state.filter, query: state.query, profile: state.profile,
+      listTitle: state.reader ? state.listTitle : $('#page-title').textContent,
+      nav: shadow.querySelector('[data-nav].active')?.dataset.nav || 'home',
+      listScroll: state.reader ? state.listScroll || 0 : $('#list-view').scrollTop,
+      readerId: state.reader?.kind === 'post' ? state.reader.id : '', readerScroll: $('#reader-view').scrollTop,
+      nativeScroll: window.scrollY,
+      conversation: conversation ? {...conversation, replies: [...conversation.replies.entries()], order: [...conversation.order], loading: false} : null,
+    };
+    state.routeViews.delete(route); state.routeViews.set(route, view);
+    while (state.routeViews.size > 8) state.routeViews.delete(state.routeViews.keys().next().value);
+  }
+  function persistRouteViews() {
+    // 原生虚拟列表找不到旧帖链接时才需要跨整页导航兜底；快照只存当前标签页，不存媒体揭示状态。
+    try {
+      const views = [...state.routeViews.values()];
+      let text = JSON.stringify(views);
+      while (text.length > 1500000 && views.length) { views.shift(); text = JSON.stringify(views); }
+      sessionStorage.setItem(STORE + 'routeViews', text);
+    } catch { /* 超出浏览器配额时仍保留内存快照，正常 SPA 返回不受影响。 */ }
+  }
+  function restoreRouteView(view) {
+    state.posts = new Map(view?.posts || []); state.sequence = view?.sequence || 0;
+    state.filter = view?.filter || 'all'; state.query = view?.query || '';
+    state.profile = view?.profile || null; state.profileKey = '';
+    // JSON 将 Infinity 序列化为 null；未遇到推荐区边界的讨论仍要允许继续收集评论。
+    state.conversation = view?.conversation ? {...view.conversation, endY: view.conversation.endY ?? Infinity, replies: new Map(view.conversation.replies), order: [...view.conversation.order], loading: false} : null;
+    state.loading = false; state.lastLoad = 0; state.autoOpened = false; state.navigating = false;
+    state.restoredList = !!view && !postInfo(location.href); state.listScroll = view?.listScroll || 0;
+    $('#search-input').value = state.query;
+    shadow.querySelectorAll('[data-nav]').forEach(node => node.classList.toggle('active', node.dataset.nav === (view?.nav || 'home')));
+    closeReader(); renderProfile(); renderSideNotes();
+    if (view?.listTitle) $('#page-title').textContent = view.listTitle;
+    const reader = view?.readerId && state.posts.get(view.readerId);
+    if (reader && postInfo(location.href)?.id === reader.id) { state.autoOpened = true; openReader(reader); }
+    const restoreScroll = () => {
+      if (view && view.route !== state.route) return;
+      $('#list-view').scrollTop = state.listScroll;
+      if (reader) $('#reader-view').scrollTop = view.readerScroll || 0;
+      if (view && !postInfo(location.href)) window.scrollTo({top: view.nativeScroll || 0, behavior: 'instant'});
+    };
+    restoreScroll(); requestAnimationFrame(restoreScroll);
+  }
+  function restoreInitialView() {
+    try {
+      const returning = sessionStorage.getItem(STORE + 'restoreRoute') === state.route
+        || performance.getEntriesByType('navigation')[0]?.type === 'back_forward';
+      sessionStorage.removeItem(STORE + 'restoreRoute');
+      const views = JSON.parse(sessionStorage.getItem(STORE + 'routeViews') || '[]');
+      if (!Array.isArray(views)) return;
+      for (const view of views) if (view && validReturnPath(view.route) && Array.isArray(view.posts) && Date.now() - view.savedAt < 1800000) state.routeViews.set(view.route, view);
+      const view = state.routeViews.get(state.route);
+      if (returning && view) restoreRouteView(view);
+    } catch { /* 过期、损坏或不可用的快照不阻止 X 正常加载。 */ }
+  }
+  function updateRoute() {
+    const route = location.pathname + location.search;
+    if (route === state.route) return;
+    const overlay = /^\/compose\//.test(location.pathname) || /\/status\/\d+\/(photo|video)\/\d+\/?$/.test(location.pathname);
+    // X 的原生弹窗会改变地址；打开和关闭浮层不应清空文档及阅读位置。
+    if (state.nativeUI && overlay) { state.overlayReturn ||= state.route; state.route = route; return; }
+    if (state.overlayReturn === route) { state.overlayReturn = null; state.route = route; applyMode(); return; }
+    rememberRouteView(); state.overlayReturn = null; state.route = route;
+    // 浏览器自己的后退也会结束当前层来源，避免子讨论的旧记录干扰父帖再次返回。
+    const routes = postReturnRoutes();
+    while (routes.length && routes[routes.length - 1].from === route) routes.pop();
+    savePostReturnRoutes(routes);
+    try { if (sessionStorage.getItem(STORE + 'restoreRoute') === route) sessionStorage.removeItem(STORE + 'restoreRoute'); } catch { /* 仅清理兜底导航标记。 */ }
+    restoreRouteView(state.routeViews.get(route)); applyMode();
+  }
+  function nativePostLink(record) {
+    const article = liveArticle(record.id);
+    if (!article) return null;
+    const {time} = articleIdentity(article);
+    const link = time?.closest('a');
+    if (link && postInfo(link.href)?.id === record.id) return link;
+    return Array.from(article.querySelectorAll('a[href*="/status/"]')).find(node => {
+      const url = new URL(node.href, location.origin);
+      return postInfo(url.href)?.id === record.id && /^\/[\w]+\/status\/\d+\/?$/.test(url.pathname);
+    }) || null;
+  }
+  async function navigateToPost(record) {
+    if (state.navigating) return;
     const from = state.overlayReturn || location.pathname + location.search;
     const destination = new URL(record.url, location.origin);
     const to = destination.pathname + destination.search;
     const samePost = postInfo(new URL(from, location.origin).href)?.id === record.id;
+    rememberRouteView();
     if (!samePost && destination.origin === location.origin && from !== to && validReturnPath(from) && validReturnPath(to)) {
       let routes = postReturnRoutes();
       // 新的列表入口重新开始；从评论进入子讨论时保留返回原帖的路径。
       if (routes[routes.length - 1]?.to !== from) routes = [];
-      routes.push({from, to}); savePostReturnRoutes(routes.slice(-16));
+      routes.push({from, to, historyLength: history.length}); savePostReturnRoutes(routes.slice(-16));
     }
+    state.navigating = true;
+    let link = nativePostLink(record);
+    // X 会回收屏外单元格；先回到该帖原位置，等真实链接重新挂载，仍交由 X 自己导航。
+    if (!link && Number.isFinite(record.nativeY)) {
+      window.scrollTo({top: Math.max(0, record.nativeY - 120), behavior: 'instant'});
+      for (let attempt = 0; attempt < 8 && !link; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        if (from !== location.pathname + location.search) { state.navigating = false; return; }
+        link = nativePostLink(record);
+      }
+    }
+    if (link) {
+      link.click();
+      await new Promise(resolve => setTimeout(resolve, 200));
+      if (from !== location.pathname + location.search) { updateRoute(); collect(); return; }
+    }
+    // X 没提供可点击链接时保留来源快照，避免兜底跳转后返回丢失列表。
+    persistRouteViews();
     location.assign(record.url);
   }
   function returnFromReader() {
     if (state.reader?.kind !== 'post' || !postInfo(location.href)) { closeReader(); return; }
+    if (state.navigating) return;
     const current = location.pathname + location.search;
     const routes = postReturnRoutes();
     const source = routes[routes.length - 1];
     // 只使用当前帖子对应的来源；直接进入帖子或失效的来源回到 /home。
     const destination = source?.to === current ? routes.pop().from : '/home';
-    savePostReturnRoutes(destination === '/home' ? [] : routes);
+    savePostReturnRoutes(routes);
+    rememberRouteView(); state.navigating = true;
+    // 仅在已知来源紧邻当前历史项时后退，不能把用户带到其他网站或失效的旧页面。
+    if (source?.to === current && Number.isInteger(source.historyLength) && history.length === source.historyLength + 1) {
+      history.back(); return;
+    }
+    persistRouteViews();
+    try { sessionStorage.setItem(STORE + 'restoreRoute', destination); } catch { /* 正常导航不依赖存储。 */ }
+    const link = Array.from(document.querySelectorAll('a[href]')).find(node => {
+      try { const url = new URL(node.href, location.origin); return url.origin === location.origin && url.pathname + url.search === destination; }
+      catch { return false; }
+    });
+    if (link) { link.click(); setTimeout(() => { if (location.pathname + location.search === current) location.assign(destination); }, 250); return; }
     location.assign(destination);
   }
   function collectConversation(scope, articles, info) {
@@ -878,10 +991,15 @@
   }
 
   function openReader(record) {
+    if (!state.reader) { state.listScroll = $('#list-view').scrollTop; state.listTitle = $('#page-title').textContent; }
     closeMediaPreview();
     if (state.reader?.id !== record.id) resetMediaReveals();
     shadow.querySelectorAll('video,audio').forEach(media => media.pause());
     flushNote(); state.reader = record; record.readAt = Date.now();
+    for (const view of state.routeViews.values()) {
+      const cached = view.posts.find(([id]) => id === record.id)?.[1];
+      if (cached) cached.readAt = record.readAt;
+    }
     if (record.kind === 'note') save('notes', state.notes);
     $('#list-view').hidden = true; $('#reader-view').hidden = false; $('#reader-toolbar').hidden = false;
     $('#page-title').textContent = '文档'; $('#popover').hidden = true;
@@ -942,8 +1060,9 @@
     toast(state.favorites.has(record.id) ? '已加入本地收藏' : '已取消本地收藏');
   }
   async function loadMore() {
-    if (!activeMode() || state.loading || state.reader || Date.now() - state.lastLoad < 900) return;
+    if (!activeMode() || state.loading || state.reader || state.navigating || Date.now() - state.lastLoad < 900) return;
     if (!state.posts.size) { collect(); toast('页面尚无可读取内容；需要登录时请切回原界面。'); return; }
+    state.restoredList = false;
     await loadNativeBatch();
   }
   async function loadNativeBatch(conversation = null) {
@@ -956,7 +1075,7 @@
     try {
       // X 按原帖高度虚拟化页面；连续逐屏收集同一讨论/时间线的一批，避免跳过屏外节点。
       for (let step = 0; step < 32 && Date.now() - progress.lastLoad < 22000; step++) {
-        if (!activeMode() || state.nativeUI || route !== location.pathname + location.search) break;
+        if (!activeMode() || state.nativeUI || state.navigating || route !== location.pathname + location.search) break;
         if (conversation ? state.reader?.id !== conversation.id || state.conversation !== conversation || conversation.complete
           : state.reader || state.filter !== 'all' || state.query) break;
         if (count() - progress.loadStart >= LOAD_BATCH_SIZE) break;

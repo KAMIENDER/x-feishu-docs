@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X → 飞书云文档外观
 // @namespace    local.x-feishu-docs
-// @version      1.5.0
+// @version      1.5.3
 // @description  将 X 时间线、用户主页和帖子讨论显示为飞书云文档风格，保留原文、媒体与原生操作。
 // @author       KAMIENDER
 // @homepageURL  https://github.com/KAMIENDER/x-feishu-docs
